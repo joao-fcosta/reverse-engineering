@@ -47,13 +47,3 @@ Para a reestruturação, optei por uma abordagem moderna utilizando **C# 12**, m
 * **Switch Expressions:** Substituição de `if/else` aninhados por expressões switch, tornando a leitura de regras de frete e desconto muito mais clara.
 * **Precisão Financeira:** Uso estrito do tipo `decimal` (sufixo `m`) para todos os cálculos monetários, evitando erros de arredondamento de ponto flutuante.
 * **Responsabilidade Única (SRP):** A lógica de taxas extras por categoria foi movida para a classe `ItemPedido`, enquanto o cálculo de frete e juros foi isolado em métodos privados dentro do serviço.
-
-### Exemplo de Melhoria (Cálculo de Juros):
-**Antes:** `if` complexos com operadores lógicos.
-**Depois:**
-```csharp
-return p.Pagamento.Parcelas switch {
-    > 1 and <= 6 => subtotal * 0.02m,
-    > 6 => subtotal * 0.05m,
-    _ => 0m
-};
