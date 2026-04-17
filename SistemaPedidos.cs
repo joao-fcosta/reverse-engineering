@@ -2,183 +2,189 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace SistemaPedidos.Refatorado
+public enum TipoCliente { VIP, PREMIUM, NORMAL, NOVO }
+public enum FormaPagamento { CARTAO, BOLETO, PIX, DINHEIRO }
+public enum CategoriaItem { NORMAL, ALIMENTO, IMPORTADO }
+
+public class Cliente
 {
-    // --- ENUMS ---
-    public enum TipoCliente { Novo, Normal, Premium, Vip }
-    public enum FormaPagamento { Pix, Boleto, Cartao, Dinheiro }
+    public string Nome { get; set; }
+    public string Email { get; set; }
+    public TipoCliente Tipo { get; set; }
+    public bool Bloqueado { get; set; }
+}
 
-    // --- DOMÍNIO (Entidades e Objetos de Valor) ---
-    public record Cliente(string Nome, string Email, TipoCliente Tipo, bool Bloqueado);
-    
-    public record Endereco(string Logradouro, string Pais);
-    
-    public record Pagamento(FormaPagamento Forma, int Parcelas);
-    
-    public record ConfiguracaoPedido(bool EhEntregaExpressa, bool EnviarEmail, bool SalvarLog);
+public class ItemPedido
+{
+    public string Nome { get; set; }
+    public CategoriaItem Categoria { get; set; }
+    public int Quantidade { get; set; }
+    public double PrecoUnitario { get; set; }
+}
 
-    public class ItemPedido
+public class Pedido
+{
+    public int Id { get; set; }
+    public Cliente Cliente { get; set; }
+    public List<ItemPedido> Itens { get; set; }
+    public string Cupom { get; set; }
+    public FormaPagamento FormaPagamento { get; set; }
+    public string EnderecoEntrega { get; set; }
+    public double PesoTotal { get; set; }
+    public bool EntregaExpressa { get; set; }
+    public string Pais { get; set; }
+    public int Parcelas { get; set; }
+}
+
+public class ValidadorPedido
+{
+    public List<string> Validar(Pedido pedido)
     {
-        public string Nome { get; set; } = string.Empty;
-        public string Categoria { get; set; } = string.Empty;
-        public int Quantidade { get; set; }
-        public decimal PrecoUnitario { get; set; }
+        var erros = new List<string>();
 
-        public decimal CalcularSubtotal()
+        if (pedido.Id <= 0)
+            erros.Add("Pedido inválido");
+
+        if (string.IsNullOrEmpty(pedido.Cliente?.Nome))
+            erros.Add("Nome do cliente não informado");
+
+        if (pedido.Cliente?.Bloqueado == true)
+            erros.Add("Cliente bloqueado");
+
+        if (pedido.Itens == null || pedido.Itens.Count == 0)
+            erros.Add("Pedido sem itens");
+
+        foreach (var item in pedido.Itens ?? new List<ItemPedido>())
         {
-            // Regra de negócio: Taxas por categoria identificadas na Engenharia Reversa
-            decimal taxaExtra = Categoria.ToUpper() switch
-            {
-                "ALIMENTO" => 2.0m,
-                "IMPORTADO" => 5.0m,
-                _ => 0m
-            };
-            return (PrecoUnitario * Quantidade) + taxaExtra;
+            if (item.Quantidade <= 0)
+                erros.Add($"Quantidade inválida: {item.Nome}");
+
+            if (item.PrecoUnitario < 0)
+                erros.Add($"Preço inválido: {item.Nome}");
         }
+
+        if (string.IsNullOrEmpty(pedido.EnderecoEntrega))
+            erros.Add("Endereço não informado");
+
+        return erros;
+    }
+}
+
+public class CalculadoraPedido
+{
+    public double CalcularSubtotal(List<ItemPedido> itens)
+    {
+        double subtotal = 0;
+
+        foreach (var item in itens)
+        {
+            subtotal += item.PrecoUnitario * item.Quantidade;
+
+            if (item.Categoria == CategoriaItem.ALIMENTO)
+                subtotal += 2;
+
+            if (item.Categoria == CategoriaItem.IMPORTADO)
+                subtotal += 5;
+        }
+
+        return subtotal;
     }
 
-    public record Pedido(
-        int Id,
-        Cliente Cliente,
-        List<ItemPedido> Itens,
-        Endereco Endereco,
-        Pagamento Pagamento,
-        ConfiguracaoPedido Configuracao,
-        string Cupom,
-        double PesoTotal
-    );
-
-    // --- RESULTADO DO PROCESSAMENTO ---
-    public class ProcessamentoResultado
+    public double CalcularDesconto(double subtotal, TipoCliente tipo)
     {
-        public bool Sucesso { get; set; }
-        public decimal TotalFinal { get; set; }
-        public List<string> Mensagens { get; set; } = new();
-
-        public static ProcessamentoResultado Falha(List<string> erros) 
-            => new() { Sucesso = false, Mensagens = erros };
-
-        public static ProcessamentoResultado Ok(decimal total, List<string> alertas) 
-            => new() { Sucesso = true, TotalFinal = total, Mensagens = alertas };
+        return tipo switch
+        {
+            TipoCliente.VIP => subtotal * 0.15,
+            TipoCliente.PREMIUM => subtotal * 0.10,
+            TipoCliente.NORMAL => subtotal * 0.02,
+            _ => 0
+        };
     }
 
-    // --- SERVIÇO PRINCIPAL (A Classe Reestruturada) ---
-    public class PedidoService
+    public double AplicarCupom(string cupom, double subtotal, TipoCliente tipo, ref double frete)
     {
-        private readonly List<string> _historicoLogs = new();
+        double descontoExtra = 0;
 
-        public ProcessamentoResultado Processar(Pedido pedido)
+        if (string.IsNullOrEmpty(cupom)) return 0;
+
+        switch (cupom)
         {
-            var erros = ValidarPedido(pedido);
-            if (erros.Any())
-                return ProcessamentoResultado.Falha(erros);
-
-            // Cálculos isolados por responsabilidade
-            decimal subtotal = pedido.Itens.Sum(i => i.CalcularSubtotal());
-            decimal desconto = CalcularDescontoTotal(pedido, subtotal);
-            decimal frete = CalcularFrete(pedido);
-            decimal juros = CalcularJuros(pedido, subtotal);
-
-            decimal total = Math.Max(0, subtotal - desconto + frete + juros);
-
-            // Regras de Alerta/Notificação
-            var alertas = GerarAlertasNegocio(pedido, subtotal);
-
-            if (pedido.Configuracao.SalvarLog)
-                ExecutarLogging(pedido, subtotal, desconto, frete, juros, total);
-
-            if (pedido.Configuracao.EnviarEmail && !string.IsNullOrEmpty(pedido.Cliente.Email))
-                alertas.Add($"Email enviado para {pedido.Cliente.Email}");
-
-            return ProcessamentoResultado.Ok(total, alertas);
+            case "DESC10":
+                descontoExtra = subtotal * 0.10;
+                break;
+            case "DESC20":
+                descontoExtra = subtotal * 0.20;
+                break;
+            case "FRETEGRATIS":
+                frete = 0;
+                break;
+            case "VIP50" when tipo == TipoCliente.VIP:
+                descontoExtra = 50;
+                break;
         }
 
-        private List<string> ValidarPedido(Pedido p)
+        return descontoExtra;
+    }
+
+    public double CalcularFrete(string pais, double peso, bool expressa)
+    {
+        double frete;
+
+        if (pais == "BR")
         {
-            var erros = new List<string>();
-            if (p.Id <= 0) erros.Add("Pedido inválido");
-            if (string.IsNullOrWhiteSpace(p.Cliente.Nome)) erros.Add("Nome do cliente não informado");
-            if (p.Cliente.Bloqueado) erros.Add("Cliente bloqueado");
-            if (p.Itens == null || !p.Itens.Any()) erros.Add("Pedido sem itens");
-            if (string.IsNullOrWhiteSpace(p.Endereco.Logradouro)) erros.Add("Endereço não informado");
-            
-            return erros;
+            frete = peso <= 1 ? 10 :
+                    peso <= 5 ? 25 :
+                    peso <= 10 ? 40 : 70;
+
+            if (expressa) frete += 30;
+        }
+        else
+        {
+            frete = peso <= 1 ? 50 :
+                    peso <= 5 ? 80 : 120;
+
+            if (expressa) frete += 70;
         }
 
-        private decimal CalcularDescontoTotal(Pedido p, decimal subtotal)
+        return frete;
+    }
+
+    public double CalcularJuros(FormaPagamento forma, int parcelas, double subtotal)
+    {
+        if (forma == FormaPagamento.CARTAO)
         {
-            // 1. Desconto por Tipo de Cliente
-            decimal descontoBase = p.Cliente.Tipo switch {
-                TipoCliente.Vip => subtotal * 0.15m,
-                TipoCliente.Premium => subtotal * 0.10m,
-                TipoCliente.Normal => subtotal * 0.02m,
-                _ => 0m
-            };
+            if (parcelas > 1 && parcelas <= 6)
+                return subtotal * 0.02;
 
-            // 2. Desconto por Cupom
-            decimal descontoCupom = p.Cupom switch {
-                "DESC10" => subtotal * 0.10m,
-                "DESC20" => subtotal * 0.20m,
-                "VIP50" when p.Cliente.Tipo == TipoCliente.Vip => 50m,
-                _ => 0m
-            };
-
-            // 3. Desconto por Forma de Pagamento
-            decimal descontoFinanceiro = p.Pagamento.Forma switch {
-                FormaPagamento.Pix => 10m,
-                FormaPagamento.Boleto => 5m,
-                _ => 0m
-            };
-
-            return descontoBase + descontoCupom + descontoFinanceiro;
+            if (parcelas > 6)
+                return subtotal * 0.05;
         }
 
-        private decimal CalcularFrete(Pedido p)
-        {
-            if (p.Cupom == "FRETEGRATIS") return 0;
+        return 0;
+    }
+}
 
-            bool ehBrasil = p.Endereco.Pais == "BR";
-            decimal freteBase = ehBrasil 
-                ? TabelaFreteNacional(p.PesoTotal) 
-                : TabelaFreteInternacional(p.PesoTotal);
+public class PedidoService
+{
+    private readonly ValidadorPedido _validador = new();
+    private readonly CalculadoraPedido _calc = new();
 
-            decimal taxaUrgencia = p.Configuracao.EhEntregaExpressa ? (ehBrasil ? 30m : 70m) : 0m;
+    public string Processar(Pedido pedido)
+    {
+        var erros = _validador.Validar(pedido);
+        if (erros.Any())
+            return string.Join("\n", erros);
 
-            return freteBase + taxaUrgencia;
-        }
+        double subtotal = _calc.CalcularSubtotal(pedido.Itens);
+        double frete = _calc.CalcularFrete(pedido.Pais, pedido.PesoTotal, pedido.EntregaExpressa);
+        double desconto = _calc.CalcularDesconto(subtotal, pedido.Cliente.Tipo);
 
-        private decimal TabelaFreteNacional(double peso) =>
-            peso <= 1 ? 10 : peso <= 5 ? 25 : peso <= 10 ? 40 : 70;
+        desconto += _calc.AplicarCupom(pedido.Cupom, subtotal, pedido.Cliente.Tipo, ref frete);
 
-        private decimal TabelaFreteInternacional(double peso) =>
-            peso <= 1 ? 50 : peso <= 5 ? 80 : 120;
+        double juros = _calc.CalcularJuros(pedido.FormaPagamento, pedido.Parcelas, subtotal);
 
-        private decimal CalcularJuros(Pedido p, decimal subtotal)
-        {
-            if (p.Pagamento.Forma != FormaPagamento.Cartao) return 0;
+        double total = Math.Max(0, subtotal - desconto + frete + juros);
 
-            return p.Pagamento.Parcelas switch {
-                > 1 and <= 6 => subtotal * 0.02m,
-                > 6 => subtotal * 0.05m,
-                _ => 0m
-            };
-        }
-
-        private List<string> GerarAlertasNegocio(Pedido p, decimal subtotal)
-        {
-            var alertas = new List<string>();
-            if (subtotal > 1000) alertas.Add("Pedido de alto valor");
-            if (subtotal > 5000 && p.Cliente.Tipo == TipoCliente.Novo) alertas.Add("Pedido suspeito para cliente novo");
-            if (p.Pagamento.Forma == FormaPagamento.Boleto && subtotal > 3000) alertas.Add("Pedido com boleto acima do limite recomendado");
-            if (p.Endereco.Pais != "BR" && subtotal < 100) alertas.Add("Pedido internacional abaixo do valor mínimo recomendado");
-            
-            return alertas;
-        }
-
-        private void ExecutarLogging(Pedido p, decimal sub, decimal desc, decimal frt, decimal jur, decimal tot)
-        {
-            _historicoLogs.Add($"[{DateTime.Now}] Pedido: {p.Id} | Cliente: {p.Cliente.Nome} | Total: {tot:C2}");
-            // No log original eram salvos todos os campos separadamente, mantivemos a lógica.
-        }
+        return $"TOTAL_FINAL={total}";
     }
 }
